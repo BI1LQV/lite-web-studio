@@ -200,31 +200,49 @@ const toggleDetails = () => {
   if (playlist.value[currentSongIndex.value].id !== 'empty_song')
     showDetails.value = !showDetails.value;
 };
-
-const applySong = async () => {
-  audioLoading.value = false;
-  if (currentSongObject.value.id === 'empty_song') return false;
+const getAudioSrc=async (preload=false)=>{
   let _src = null;
+  let _currentSongObject=currentSongObject
+  if(preload){
+    _currentSongObject={
+      value:playlist.value[(currentSongIndex.value+1)% playlist.value.length]
+    }
+  }
   //加载歌曲，先查看是否有缓存过，有的话从换从加载
-  if (window.AudioLists.cached_list.includes(currentSongObject.value.id)) {
-    const _songFile = await utils.getAudioInDB(currentSongObject.value.id);
+  if (window.AudioLists.cached_list.includes(_currentSongObject.value.id)) {
+    const _songFile = await utils.getAudioInDB(_currentSongObject.value.id);
     const _URL = window.URL || window.webkitURL;
     _src = _URL.createObjectURL(_songFile?.blobcached);
   } else {
     // 加载当前歌曲 如果是精选状态且有精选版本就跳精选
     _src = utils.getResourceURL(
       !window.Variables.use_treated.value ||
-        !currentSongObject.value.has_audio_sec,
+        !_currentSongObject.value.has_audio_sec,
       isChResource.value,
       false,
-      currentSongObject.value.date,
-      currentSongObject.value.name,
-      currentSongObject.value.ext_name,
-      currentSongObject.value.artist
+      _currentSongObject.value.date,
+      _currentSongObject.value.name,
+      _currentSongObject.value.ext_name,
+      _currentSongObject.value.artist
     );
   }
-  audioSource.src = _src.replace('『', '【').replace('』', '】');
-  audio.load();
+  return _src
+}
+const applySong = async (preload=false,bloburl=null,preName=null) => {
+  audioLoading.value = false;
+  if (currentSongObject.value.id === 'empty_song') return false;
+  const _src=(await getAudioSrc()).replace('『', '【').replace('』', '】')
+  if(!preload){//常规加载
+    audioSource.src = _src;
+    audio.load();
+  }
+  if(preload&&bloburl&&_src==preName){//已经预加载
+      audioSource.src=bloburl
+      audio.load()
+      audio.play()
+      audio.currentTime=0
+  }
+
   // 播放列表跳转
   if (showPlaylist.value) playlistScroll();
   // 更改media session信息
@@ -524,9 +542,47 @@ onMounted(() => {
   });
   audio.addEventListener('waiting', () => (audioLoading.value = true));
   audio.addEventListener('playing', () => (audioLoading.value = false));
-  audio.addEventListener('timeupdate', () => {
-    if (audio.duration) playProgress.value = audio.currentTime / audio.duration;
-    else playProgress.value = 0;
+  let hasFetched=false
+  let preBlob=null
+  let preName=null
+  audio.addEventListener('timeupdate',async () => {
+    if (!audio.duration){//进度为0 后面的不用执行了
+      playProgress.value = 0
+      return
+    }
+    console.log(audio.duration,audio.currentTime)
+    //有进度，更新进度
+    playProgress.value = audio.currentTime / audio.duration
+    if(playProgress.value<0.8){//进度还小，不需要预加载
+      hasFetched=false
+      return
+    }
+    if(playlist.value.length === 1 || playMode.value === 'loopOnce' || playMode.value === 'shuffle'){
+      //单曲循环或随机播放，不需要预加载
+      return
+    }
+    if(audio.duration-audio.currentTime<0.5){//歌曲结束，跳转下一首
+      currentSongIndex.value += 1;
+      currentSongIndex.value %= playlist.value.length;
+      console.log('预加载并跳转到缓存',preBlob)
+      applySong(true,preBlob,preName)
+      return
+    }
+    if(hasFetched){//已经预加载，不需要再次加载
+      return
+    }
+
+    //进度达到阈值，并且需要加载
+    hasFetched=true
+    const preloadSrc=(await getAudioSrc(true))
+      .replace('『', '【').replace('』', '】');
+    console.log('开始预加载')
+    preBlob=await fetch(preloadSrc).then(res=>res.blob()).then(blob=>{
+      console.log('预加载完毕',blob)
+      return URL.createObjectURL(blob)
+    })
+    console.log('预加载完毕',preBlob)
+    preName=preloadSrc
   });
   audio.addEventListener('play', () => {
     playStatus.value = true;
